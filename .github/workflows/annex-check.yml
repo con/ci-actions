@@ -1,0 +1,19 @@
+name: annex-check (fixture)
+
+on:
+  pull_request:
+    branches: [test-annex-check/base]
+    # edited: to follow changes to "Extra git-annex remote:" lines
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  annex-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: con/ci-actions/annex-check@claude/bold-bohr-lvtger
