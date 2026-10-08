@@ -129,6 +129,11 @@ def git_ok(*args, **kwargs) -> bool:
     return run(["git", *args], check=False, **kwargs).returncode == 0
 
 
+def as_json_text(path: str) -> str:
+    """path as git-annex renders it in JSON"""
+    return path.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+
+
 def write_blob(blob: str, dest: str):
     with open(dest, "wb") as f:
         subprocess.run(["git", "cat-file", "blob", blob], stdout=f, check=True)
@@ -410,7 +415,8 @@ def annex_add_verdicts(
 
         verdicts = {}
         for group in _worktree_groups(files):
-            by_path = {c.path: c for c in group}
+            # git-annex's JSON has U+FFFD for bytes that are not UTF-8
+            by_path = {as_json_text(c.path): c for c in group}
             sgit("read-tree", head)
             for c in group:
                 dest = os.path.join(scratch, c.path)
@@ -495,10 +501,13 @@ def check_largefiles(ctx: Context, changes: list[Change], report: Report):
         report.summary.append("No files were committed directly to git.\n")
         return
     report.info(f"Checking {len(files)} file(s) committed directly to git ...")
+    if "MagicMime" not in git("annex", "version"):
+        report.warning("This git-annex is built without MagicMime: mimetype= and mimeencoding= "
+                       "in annex.largefiles match no file", title="annex-check: largefiles")
     violations, rules, unknown = find_violations(ctx.head, files, ctx.args)
     for c, v in unknown:
-        report.warning(f"Could not tell whether git-annex would annex {c.location}: {v.error}",
-                       title="annex-check: largefiles", file=c.path)
+        report.error(f"Could not tell whether git-annex would annex {c.location}: {v.error}",
+                     title="annex-check: largefiles", file=c.path)
     if not violations:
         report.info("All of them are fine in git.")
         report.summary.append(f"All {len(files)} file(s) committed directly to git belong there.\n")
@@ -833,8 +842,7 @@ def pr_author_trusted(event: dict, pr: dict) -> tuple[bool, str]:
     return False, f"could not determine whether {login or 'the author'} is a collaborator"
 
 
-def make_context(args, report: Report) -> Context:
-    event = load_event()
+def make_context(args, event: dict, report: Report) -> Context:
     pr = event.get("pull_request") or {}
     bases, head, base_fetch = list(args.base), args.head, None
     if pr:
@@ -928,7 +936,7 @@ def cmd_check(args) -> int:
         raise Failure(f"Unknown checks: {', '.join(sorted(unknown))}; known: {', '.join(CHECKS)}")
     event = load_event()
     prepare_repository(bool(event), report)
-    ctx = make_context(args, report)
+    ctx = make_context(args, event, report)
     commits, changes = collect_changes(ctx.head, ctx.bases)
     report.info(
         f"Checking {len(commits)} commit(s) in {short(ctx.head)} but not in "
@@ -996,10 +1004,11 @@ def cmd_fix(args) -> int:
     files = files_in_git(changes)
     violations, _rules, unknown = find_violations(head, files, args) if files else ([], {}, [])
     for c, v in unknown:
-        report.warning(f"Could not tell whether git-annex would annex {c.location}: {v.error}")
+        report.error(f"Could not tell whether git-annex would annex {c.location} (left as is): "
+                     f"{v.error}")
     if not violations:
         report.info("Nothing to fix: no committed file belongs in git-annex.")
-        return 0
+        return 1 if report.failed else 0
 
     # put the content into the annex
     keys = {v.key: c.blob for c, v in violations}
@@ -1056,7 +1065,7 @@ def cmd_fix(args) -> int:
 The previous state is in ORIG_HEAD (`git reset --keep ORIG_HEAD` goes back to it).
 Next, make the content available, e.g. `git annex copy --to=REMOTE -- {files}`
 (or `datalad push --to=REMOTE`), and `git push --force-with-lease`.""")
-    return 0
+    return 1 if report.failed else 0
 
 
 def main(argv=None) -> int:

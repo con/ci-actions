@@ -135,6 +135,21 @@ def test_largefiles_violations_in_every_commit(work):
     assert "Hint: These commits can be rewritten" in r.stdout
 
 
+def test_largefiles_odd_names(work):
+    names = ["with space.png", "-dash.png", "юникод.png"]
+    # git-annex (10.20260901) adds this one to git: libmagic gets its name
+    # with U+FFFD for the \xff, so mimeencoding=binary does not match
+    not_utf8 = os.fsdecode(b"bad\xff.png")
+    for i, name in enumerate(names + [not_utf8]):
+        binary(work / name, 500, seed=i)
+    commit_to_git(work, *names, not_utf8)
+    r = check(work, "--base", "origin/master", "--checks", "largefiles")
+    assert r.returncode == 1
+    out = "\n".join(errors(r))
+    assert all(name in out for name in names), r.stdout
+    assert "Could not tell" not in out
+
+
 def test_largefiles_dotfiles_option(work):
     binary(work / ".hidden.bin", 100)
     commit_to_git(work, ".hidden.bin")

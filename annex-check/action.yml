@@ -56,7 +56,7 @@ inputs:
   token:
     description: >-
       Token to ask the API whether the author of the pull request is a
-      collaborator, where the event payload does not say (Forgejo).
+      collaborator; only used where the event payload does not say (Forgejo).
     default: ${{ github.token }}
 
 runs:

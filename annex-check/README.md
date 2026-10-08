@@ -22,13 +22,16 @@ A GitHub (and, hopefully, Forgejo) Action, and a standalone script
   - those of the CI clone (`origin`, special remotes with `autoenable=true`,
     and URLs registered for the keys),
   - those given in the `annex-remotes` input,
-  - the head repository of the pull request, if it is a fork, and
+  - the head repository of the pull request, if it is a fork (only useful
+    on forges that store annexed content, such as Forgejo-aneksajo: a fork on
+    github.com has the git-annex branch at best, not the content), and
   - remotes named in the pull request description with lines like
 
         Extra git-annex remote: https://hub.example.org/me/repo
 
     if its author is an owner, member, or collaborator of the repository
-    (see `pr-body-remotes`).
+    (see `pr-body-remotes`).  Mind that this lets them have CI fetch from
+    any https:// host.
 
   The git-annex branches of all of these are fetched for location
   information, which is shown for content that is not available.  Content
@@ -60,10 +63,16 @@ jobs:
           annex-remotes: |
             https://datasets.datalad.org/centerforopenneuroscience/talks/.git
             https://hub.centerforopenneuroscience.org/con/talks
+          # for DataLad datasets: `datalad save` subjects dotfiles to
+          # annex.largefiles, `git annex add` does not by default
+          dotfiles: true
 ```
 
 The action installs git-annex from [PyPI](https://pypi.org/project/git-annex/)
 with [uv](https://docs.astral.sh/uv/), and needs Python 3.8+ and git 2.26+.
+`mimetype=` and `mimeencoding=` in `annex.largefiles` need a git-annex built
+with MagicMime (the PyPI and Debian/Ubuntu builds are); the check warns if it
+is not.
 It does not run any code from the pull request.
 
 ### Inputs
@@ -78,13 +87,14 @@ It does not run any code from the pull request.
 | `largefiles` | | An `annex.largefiles` expression to use instead of the repository's configuration. |
 | `dotfiles` | the repository's `git annex config annex.dotfiles`, else `false` | `true` to subject dotfiles to `annex.largefiles` too, as `datalad save` does. |
 | `git-annex-version` | latest | Version of git-annex to install from PyPI, or `system` to use the installed one. |
-| `token` | `github.token` | To ask the API whether the author is a collaborator, where the event does not say (Forgejo). |
+| `token` | `github.token` | Only used on Forgejo: to ask the API whether the author is a collaborator, which GitHub's event says. |
 
 ## Fixing files committed to git
 
 `annex_check.py fix --base BASE` rewrites the commits of the current branch
 that are not in `BASE` so that the files the largefiles check flags are
-annexed (locked) instead, in every commit that has them — without the
+annexed instead, as locked files (symlinks; also in repositories using
+unlocked files), in every commit that has them — without the
 conflicts that a `git rebase` would run into when later commits modify such
 a file.  Commit messages, authors, and dates are kept; merges stay merges.
 The content goes into the local annex, to be copied to a remote before
