@@ -405,10 +405,13 @@ def annex_add_verdicts(
         if dotfiles is not None:
             sgit("config", "annex.dotfiles", str(dotfiles).lower())
 
-        attributes = [
-            p for p in git_z("ls-tree", "-r", "-z", "--name-only", head)
-            if os.path.basename(p) == ".gitattributes"
-        ]
+        # {path: blob}; git ignores .gitattributes that are symlinks
+        attributes = {}
+        for entry in git_z("ls-tree", "-r", "-z", head):
+            meta, path = entry.split("\t", 1)
+            mode, _type, blob = meta.split()
+            if os.path.basename(path) == ".gitattributes" and mode in REGULAR_MODES:
+                attributes[path] = blob
 
         def fresh_worktree(paths):
             """An empty index, and a work tree with only head's .gitattributes
@@ -425,11 +428,11 @@ def annex_add_verdicts(
                         os.unlink(dest)
             sgit("read-tree", "--empty")
             prefixes = tuple(p + "/" for p in paths)
-            for p in attributes:
+            for p, blob in attributes.items():
                 if not p.startswith(prefixes):
                     dest = os.path.join(scratch, p)
                     os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    write_blob(git("rev-parse", f"{head}:{p}"), dest)
+                    write_blob(blob, dest)
 
         verdicts = {}
         for group in _worktree_groups(files):
@@ -756,15 +759,15 @@ Make the content available from one of the remotes checked here, e.g. with
 `git annex copy --to=REMOTE FILES` (or `datalad push --to=REMOTE`):
 
 {listed}
-
-or"""
+"""
     else:
         to = """\
 None of the remotes of this repository can hold annexed content; name some
 in the annex-remotes input of the action (--remote), and copy the content
-there, e.g. with `git annex copy --to=REMOTE FILES`, or"""
+there, e.g. with `git annex copy --to=REMOTE FILES`,"""
     return f"""\
-{to} register a URL for it (`git annex addurl`, `git annex registerurl`), and push
+{to}
+or register a URL for it (`git annex addurl`, `git annex registerurl`), and push
 the git-annex branch.  If the content is already on a remote not listed here,
 e.g. your fork on a forge that supports git-annex, say so in the pull request
 description, with a line like
