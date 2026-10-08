@@ -1,0 +1,112 @@
+name: git-annex policy check
+description: >-
+  Check that the commits of a pull request (or push) put into git-annex what
+  the repository's annex.largefiles configuration says belongs there, and
+  that the content of annexed files is available from a reachable remote.
+author: Center for Open Neuroscience
+
+inputs:
+  checks:
+    description: >-
+      Checks to run, comma-separated: `largefiles` (no file committed to git
+      that git-annex would have annexed) and `availability` (annexed content
+      can be obtained from a remote reachable from CI).
+    default: largefiles,availability
+  annex-remotes:
+    description: >-
+      Remotes to also look for annexed content on, one per line, as `URL` or
+      `NAME=URL`, e.g. a Forgejo-aneksajo or datasets.datalad.org copy of the
+      repository.  Their git-annex branches are fetched for location
+      information.
+    default: ""
+  pr-body-remotes:
+    description: >-
+      Whose `Extra git-annex remote: URL` lines (https:// only) in the pull
+      request description to follow: `collaborators` (owners, members, and
+      collaborators of the repository), `anyone`, or `none`.
+    default: collaborators
+  base:
+    description: >-
+      Commits in these revisions (whitespace-separated) are not checked.
+      Default: the base branch of the pull request, or the previous tip of the
+      pushed branch.
+    default: ""
+  head:
+    description: >-
+      Tip of the commits to check.  Default: the head of the pull request, or
+      the pushed commit.
+    default: ""
+  largefiles:
+    description: >-
+      An annex.largefiles expression to use instead of the repository's
+      configuration.
+    default: ""
+  dotfiles:
+    description: >-
+      `true` to subject dotfiles to annex.largefiles too (as `datalad save`
+      does), `false` to let them be in git.  Default: the repository's
+      `git annex config annex.dotfiles`, else `false`.
+    default: ""
+  git-annex-version:
+    description: >-
+      Version of git-annex to install from PyPI
+      (https://pypi.org/project/git-annex/), empty for the latest, or `system`
+      to use the git-annex that is installed already.
+    default: ""
+  token:
+    description: >-
+      Token to ask the API whether the author of the pull request is a
+      collaborator, where the event payload does not say (Forgejo).
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install git-annex
+      if: inputs.git-annex-version != 'system'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.git-annex-version }}
+      run: |
+        set -euo pipefail
+        export PATH="$HOME/.local/bin:$PATH"
+        if ! command -v uv >/dev/null; then
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+        fi
+        uv tool install --quiet "git-annex${VERSION:+==$VERSION}"
+        BIN=$(uv tool dir --bin)
+        echo "$BIN" >> "$GITHUB_PATH"
+        "$BIN/git-annex" version | head -n 1
+
+    - name: Check
+      shell: bash
+      env:
+        CHECKS: ${{ inputs.checks }}
+        ANNEX_REMOTES: ${{ inputs.annex-remotes }}
+        PR_BODY_REMOTES: ${{ inputs.pr-body-remotes }}
+        BASE_REVS: ${{ inputs.base }}
+        HEAD_REV: ${{ inputs.head }}
+        LARGEFILES: ${{ inputs.largefiles }}
+        DOTFILES: ${{ inputs.dotfiles }}
+        ANNEX_CHECK_TOKEN: ${{ inputs.token }}
+        ACTION_REPOSITORY: ${{ github.action_repository }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+        # Where the hint tells to get the script from: this action's copy.
+        # github.action_* can be empty in composite actions; then take them
+        # from the path, .../_actions/OWNER/REPO/REF/annex-check
+        if [ -z "$ACTION_REPOSITORY" ] && [[ "$GITHUB_ACTION_PATH" =~ /_actions/([^/]+/[^/]+)/(.+)/annex-check$ ]]; then
+          ACTION_REPOSITORY=${BASH_REMATCH[1]}
+          ACTION_REF=${BASH_REMATCH[2]}
+        fi
+        if [ "$GITHUB_SERVER_URL" = https://github.com ] && [ -n "$ACTION_REPOSITORY" ] && [ -n "$ACTION_REF" ]; then
+          export ANNEX_CHECK_SCRIPT_URL="https://raw.githubusercontent.com/$ACTION_REPOSITORY/$ACTION_REF/annex-check/annex_check.py"
+        fi
+        args=(check --checks "$CHECKS" --pr-body-remotes "$PR_BODY_REMOTES")
+        [ -z "$ANNEX_REMOTES" ] || args+=(--remote "$ANNEX_REMOTES")
+        [ -z "$BASE_REVS" ] || args+=(--base "$BASE_REVS")
+        [ -z "$HEAD_REV" ] || args+=(--head "$HEAD_REV")
+        [ -z "$LARGEFILES" ] || args+=(--largefiles "$LARGEFILES")
+        [ -z "$DOTFILES" ] || args+=(--dotfiles "$DOTFILES")
+        python3 "$GITHUB_ACTION_PATH/annex_check.py" "${args[@]}"

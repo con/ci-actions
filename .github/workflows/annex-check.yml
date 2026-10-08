@@ -1,0 +1,105 @@
+name: annex-check
+
+on:
+  push:
+    branches: [master]
+    paths: ['annex-check/**', '.github/workflows/annex-check.yml']
+  pull_request:
+    paths: ['annex-check/**', '.github/workflows/annex-check.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests (git-annex from ${{ matrix.git-annex }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        git-annex: [pypi, ubuntu]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install git-annex from PyPI
+        if: matrix.git-annex == 'pypi'
+        run: pipx install git-annex
+
+      - name: Install git-annex from Ubuntu
+        if: matrix.git-annex == 'ubuntu'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-annex
+
+      - run: git annex version
+
+      - name: Run tests
+        run: pipx run pytest -v annex-check/tests
+
+  action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: ci-actions
+
+      # The action runs in the workspace, so the repository to check is there
+      - name: Create a repository to check
+        run: |
+          git config --global user.name CI
+          git config --global user.email ci@example.com
+          git init -q -b master .
+          echo ci-actions/ >> .git/info/exclude
+          printf '%s\n' '* annex.backend=MD5E' '**/.git* annex.largefiles=nothing' \
+            '* annex.largefiles=((mimeencoding=binary)and(largerthan=0))' > .gitattributes
+          git add .gitattributes
+          git commit -q -m init
+          git checkout -q -b clean
+          echo text > notes.md
+          git add notes.md
+          git commit -q -m 'text in git'
+          git checkout -q -b binary-in-git
+          head -c 1000 /dev/urandom > fig.png
+          git add fig.png
+          git commit -q -m 'binary in git'
+          git checkout -q -b unavailable clean
+          key=MD5E-s3--acbd18db4cc2f85cedef654fccc4a4d8.txt
+          ln -s .git/annex/objects/Xx/Yy/$key/$key annexed.txt
+          git add annexed.txt
+          git commit -q -m 'annexed, content nowhere'
+
+      - name: Check the clean branch
+        uses: ./ci-actions/annex-check
+        with:
+          base: master
+          head: clean
+
+      - name: Check the branch with a binary in git
+        id: binary-in-git
+        continue-on-error: true
+        uses: ./ci-actions/annex-check
+        with:
+          base: master
+          head: binary-in-git
+          checks: largefiles
+          git-annex-version: system
+
+      - name: Check the branch with unavailable content
+        id: unavailable
+        continue-on-error: true
+        uses: ./ci-actions/annex-check
+        with:
+          base: master
+          head: unavailable
+          checks: availability
+          git-annex-version: system
+
+      - name: Expect the checks to have failed
+        env:
+          BINARY_IN_GIT: ${{ steps.binary-in-git.outcome }}
+          UNAVAILABLE: ${{ steps.unavailable.outcome }}
+        run: |
+          echo "binary-in-git: $BINARY_IN_GIT, unavailable: $UNAVAILABLE"
+          test "$BINARY_IN_GIT" = failure
+          test "$UNAVAILABLE" = failure
