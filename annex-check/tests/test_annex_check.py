@@ -150,6 +150,30 @@ def test_largefiles_odd_names(work):
     assert "Could not tell" not in out
 
 
+def test_largefiles_file_and_directory_at_a_path(work):
+    """A path is a directory in one commit, a file in another"""
+    (work / "a").mkdir()
+    (work / "a" / "notes.md").write_text("text\n")
+    binary(work / "a" / "fig.png", 300)
+    commit_to_git(work, "a")
+    git(work, "rm", "-rq", "a")
+    binary(work / "a", 400, seed=1)  # now a file
+    binary(work / "b", 500, seed=2)
+    commit_to_git(work, "a", "b")
+    git(work, "rm", "-q", "b")
+    (work / "b").mkdir()
+    (work / "b" / "notes.md").write_text("text\n")
+    (work / "b" / ".gitattributes").write_text("* annex.largefiles=nothing\n")
+    binary(work / "b" / "fig.png", 300, seed=3)
+    commit_to_git(work, "b")
+    r = check(work, "--base", "origin/master", "--checks", "largefiles")
+    assert r.returncode == 1, r.stdout + r.stderr
+    out = "\n".join(errors(r))
+    assert len(errors(r)) == 3, r.stdout
+    assert "a/fig.png" in out and "a (commit" in out and "b (commit" in out
+    assert "b/fig.png" not in out  # b/.gitattributes lets it be in git
+
+
 def test_largefiles_dotfiles_option(work):
     binary(work / ".hidden.bin", 100)
     commit_to_git(work, ".hidden.bin")

@@ -405,34 +405,45 @@ def annex_add_verdicts(
         if dotfiles is not None:
             sgit("config", "annex.dotfiles", str(dotfiles).lower())
 
-        sgit("read-tree", head)
         attributes = [
-            p for p in git_z("ls-files", "-z", cwd=scratch)
+            p for p in git_z("ls-tree", "-r", "-z", "--name-only", head)
             if os.path.basename(p) == ".gitattributes"
         ]
-        if attributes:
-            sgit("checkout-index", "-z", "--stdin", input="\0".join(attributes) + "\0")
+
+        def fresh_worktree(paths):
+            """An empty index, and a work tree with only head's .gitattributes
+
+            Leaves out those that could not coexist with files at paths: the
+            commits that have such a file have no directory there.
+            """
+            for entry in os.listdir(scratch):
+                if entry != ".git":
+                    dest = os.path.join(scratch, entry)
+                    if os.path.isdir(dest) and not os.path.islink(dest):
+                        rmtree(dest)
+                    else:
+                        os.unlink(dest)
+            sgit("read-tree", "--empty")
+            prefixes = tuple(p + "/" for p in paths)
+            for p in attributes:
+                if not p.startswith(prefixes):
+                    dest = os.path.join(scratch, p)
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    write_blob(git("rev-parse", f"{head}:{p}"), dest)
 
         verdicts = {}
         for group in _worktree_groups(files):
-            # git-annex's JSON has U+FFFD for bytes that are not UTF-8
-            by_path = {as_json_text(c.path): c for c in group}
-            sgit("read-tree", head)
+            fresh_worktree([c.path for c in group])
             for c in group:
                 dest = os.path.join(scratch, c.path)
-                if os.path.isdir(dest) and not os.path.islink(dest):
-                    verdicts[(c.path, c.blob)] = Verdict(None, error="is a directory in head")
-                    continue
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 write_blob(c.blob, dest)
-            paths = [c.path for c in group if (c.path, c.blob) not in verdicts]
-            stdin = "\0".join(paths) + "\0"
-            sgit("rm", "--cached", "--quiet", "--ignore-unmatch",
-                 "--pathspec-from-file=-", "--pathspec-file-nul", input=stdin)
+            # git-annex's JSON has U+FFFD for bytes that are not UTF-8
+            by_path = {as_json_text(c.path): c for c in group}
             out = run(
                 ["git", "annex", "add", "--json", "--json-error-messages",
                  "--no-check-gitignore", "--batch", "-z"],
-                cwd=scratch, input=stdin, check=False,
+                cwd=scratch, input="".join(c.path + "\0" for c in group), check=False,
             ).stdout
             for line in out.splitlines():
                 if not line.strip():
@@ -446,12 +457,9 @@ def annex_add_verdicts(
                     note=rec.get("note", ""),
                     error="; ".join(rec.get("error-messages") or []),
                 )
-            for c in group:
-                dest = os.path.join(scratch, c.path)
-                if os.path.lexists(dest):
-                    os.unlink(dest)
 
         annexed = sorted({p for (p, _), v in verdicts.items() if v.key})
+        fresh_worktree([])
         rules = _largefiles_rules(scratch, annexed, largefiles) if annexed else {}
         return verdicts, rules
     finally:
